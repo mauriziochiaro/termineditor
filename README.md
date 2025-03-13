@@ -10,7 +10,7 @@ A simple, cross-platform-ish terminal-based Markdown editor (with live preview i
 - **Real-time preview**: Toggle between edit-only, split, and preview-only modes (`Ctrl+P`).
 - **Basic Markdown support**: Renders headers, list items, horizontal rules, bold, italic, and inline code.
 - **File I/O**: Load a file on startup and save (`Ctrl+S`) any changes made.
-- **Minimal, single C file**: Just one `.c` source file plus a header if needed.
+- **Minimal, single C file**: Just one `.c` source file.
 - **Cursor-based editing**: Move around, insert text, backspace, and new lines.
 
 ## Requirements
