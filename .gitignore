@@ -1,3 +1,5 @@
 termineditor.exe
 .vscode/tasks.json
 md_files/*
+leak_tracker.c
+leak_tracker.h

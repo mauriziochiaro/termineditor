@@ -17,18 +17,7 @@
 #include <string.h>
 #include <time.h>
 #include <windows.h>
-
-enum EditorKey {
-    ARROW_LEFT = 1000,
-    ARROW_RIGHT,
-    ARROW_UP,
-    ARROW_DOWN,
-    DEL_KEY,
-    HOME_KEY,
-    END_KEY,
-    PAGE_UP,
-    PAGE_DOWN
-};
+//#include "leak_tracker.h"
 
 /* Defines */
 #define MAX_LINES 1000
@@ -42,6 +31,18 @@ enum EditorKey {
 #define VERSION "1.0.0"
 #define SAVE_DIRECTORY "md_files"
 #define DEFAULT_FILENAME "untitled.md"
+
+enum EditorKey {
+    ARROW_LEFT = 1000,
+    ARROW_RIGHT,
+    ARROW_UP,
+    ARROW_DOWN,
+    DEL_KEY,
+    HOME_KEY,
+    END_KEY,
+    PAGE_UP,
+    PAGE_DOWN
+};
 
 /* Data structures */
 typedef struct {
@@ -422,6 +423,8 @@ char *editorRowsToString(int *buflen) {
     *buflen = totlen;
 
     char *buf = malloc(totlen);
+    if (!buf) return NULL;
+    
     char *p = buf;
     for (j = 0; j < E.numrows; j++) {
         memcpy(p, E.rows[j].chars, E.rows[j].size);
@@ -500,7 +503,7 @@ void editorSave() {
 
     FILE *fp = fopen(fullPath, "w");
     if (fp != NULL) {
-        if (fwrite(buf, 1, len, fp) == len) {
+        if (fwrite(buf, 1, len, fp) == (size_t)len) {
             fclose(fp);
             free(buf);
             E.dirty = 0;
@@ -583,21 +586,89 @@ void renderMarkdown(EditorRow *row, int width, char *buffer, int buffer_size) {
         // Reset formatting
         pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
     } else if (isListItem(row->chars)) {
-        // Find the bullet character
         int i = 0;
+    
+        // 1) Expand *all* leading tabs/spaces:
         while (row->chars[i] == ' ' || row->chars[i] == '\t') {
-            if (pos < buffer_size - 2) buffer[pos++] = row->chars[i];
+            if (row->chars[i] == '\t') {
+                buffer[pos++] = ' ';
+                while ((pos % TAB_SIZE) != 0 && pos < buffer_size - 1) {
+                    buffer[pos++] = ' ';
+                }
+            } else {
+                buffer[pos++] = ' ';
+            }
             i++;
         }
-
-        // Bold the bullet
-        pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[1m%c" ESC "[0m ",
+    
+        // 2) Now row->chars[i] should be '-', '*', or '+'
+        //    Print bullet in bold:
+        pos += snprintf(&buffer[pos], buffer_size - pos,
+                        ESC "[1m%c" ESC "[0m",
                         row->chars[i]);
-        i++;  // skip the bullet
-        i++;  // skip the space after bullet (assuming there's at least 1 space)
-
-        // Now copy the remainder
-        pos += snprintf(&buffer[pos], buffer_size - pos, "%s", &row->chars[i]);
+        i++;
+    
+        // 3) Skip *all* spaces/tabs that follow the bullet:
+        while (row->chars[i] == ' ' || row->chars[i] == '\t') {
+            i++;
+        }
+    
+        // 4) Parse the remainder exactly like your "normal text" loop does,
+        //    i.e. checking for inline '*' or '`' etc.
+        //    Something like:
+        int in_bold = 0, in_italic = 0, in_code = 0;
+        while (i < row->size && pos < buffer_size - 2) {
+            if (row->chars[i] == '\t') {
+                // expand it
+                buffer[pos++] = ' ';
+                while ((pos % TAB_SIZE) != 0 && pos < buffer_size - 1) {
+                    buffer[pos++] = ' ';
+                }
+                i++;
+                continue;
+            }
+            // Check for bold "**"
+            if (row->chars[i] == '*' && i + 1 < row->size &&
+                row->chars[i + 1] == '*') {
+                if (!in_bold) {
+                    // Turn bold on
+                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[1m");
+                } else {
+                    // Turn bold off
+                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
+                }
+                in_bold = !in_bold;
+                i += 2;
+            }
+            // Check for italic "*"
+            else if (row->chars[i] == '*') {
+                if (!in_italic) {
+                    pos += snprintf(&buffer[pos], buffer_size - pos,
+                                    ESC "[3m");  // Italic on
+                } else {
+                    pos += snprintf(&buffer[pos], buffer_size - pos,
+                                    ESC "[0m");  // Italic off
+                }
+                in_italic = !in_italic;
+                i++;
+            }
+            // Check for inline code "`"
+            else if (row->chars[i] == '`') {
+                if (!in_code) {
+                    pos += snprintf(&buffer[pos], buffer_size - pos,
+                                    ESC "[36m");  // code color
+                } else {
+                    pos += snprintf(&buffer[pos], buffer_size - pos,
+                                    ESC "[0m");  // reset
+                }
+                in_code = !in_code;
+                i++;
+            } else {
+                // Normal character
+                if (pos < buffer_size - 2) buffer[pos++] = row->chars[i];
+                i++;
+            }
+        }
     } else if (isHorizontalRule(row->chars)) {
         // A horizontal line across the full width
         for (int i = 0; i < width - 1 && pos < buffer_size - 2; i++) {
@@ -614,6 +685,14 @@ void renderMarkdown(EditorRow *row, int width, char *buffer, int buffer_size) {
         int in_bold = 0, in_italic = 0, in_code = 0;
 
         while (i < row->size && pos < buffer_size - 2) {
+            if (row->chars[i] == '\t') {
+                // expand tabs to spaces
+                buffer[pos++] = ' ';
+                while ((pos % TAB_SIZE) != 0 && pos < buffer_size - 1) {
+                    buffer[pos++] = ' ';
+                }
+                i++;
+            }
             // Check for bold "**"
             if (row->chars[i] == '*' && i + 1 < row->size &&
                 row->chars[i + 1] == '*') {
@@ -664,7 +743,11 @@ void renderMarkdown(EditorRow *row, int width, char *buffer, int buffer_size) {
     }
 
     // Make sure it's null-terminated
-    buffer[buffer_size - 1] = '\0';
+    if (pos < buffer_size - 1) {
+        buffer[pos] = '\0';
+    } else {
+        buffer[buffer_size - 1] = '\0';
+    }
 }
 
 /*** Output ***/
@@ -698,7 +781,7 @@ void editorScroll() {
 
 void editorDrawRows(struct abuf *ab) {
     int y;
-    int screen_width = E.screencols;
+    //int screen_width = E.screencols;
     int edit_width = E.preview_mode == 1
                          ? E.screencols / 2 - 2
                          : E.screencols;  // Adjust for separator
@@ -1028,7 +1111,13 @@ void abAppend(struct abuf *ab, const char *s, int len) {
     ab->len += len;
 }
 
-void abFree(struct abuf *ab) { free(ab->b); }
+void abFree(struct abuf *ab) { 
+    if (ab->b) {
+        free(ab->b);
+        ab->b = NULL;  // Prevent future double free attempts
+        ab->len = 0;   // Reset length too
+    }
+}
 
 int editorRowCxToRx(EditorRow *row, int cx) {
     int rx = 0;
