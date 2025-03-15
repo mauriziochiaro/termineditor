@@ -789,14 +789,27 @@ void editorDrawRows(struct abuf *ab) {
         rightWidth = E.screencols - leftWidth - 1;  // subtract 1 for the separator
         if (rightWidth < 0) rightWidth = 0;
     }
-
     for (int y = 0; y < E.screenrows; y++) {
         int filerow = y + E.rowoff;
-
+        /* Welcome message */
         if (filerow >= E.numrows) {
-            // Print ~ if file is empty beyond that row
-            abAppend(ab, "~", 1);
-
+            if (E.numrows == 0 && y == E.screenrows / 3) {
+                char welcome[80];
+                int welcomelen = snprintf(welcome, sizeof(welcome),
+                                          "Markdown Editor -- version %s", VERSION);
+                if (welcomelen > E.screencols) welcomelen = E.screencols;
+        
+                int padding = (E.screencols - welcomelen) / 2;
+                if (padding) {
+                    abAppend(ab, "~", 1);
+                    padding--;
+                }
+                while (padding--) abAppend(ab, " ", 1);
+        
+                abAppend(ab, welcome, welcomelen);
+            } else {
+                abAppend(ab, "~", 1);
+            }
         } else {
             switch (E.preview_mode) {
 
