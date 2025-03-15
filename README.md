@@ -3,7 +3,9 @@
 A simple, cross-platform-ish terminal-based Markdown editor (with live preview in split view or full preview mode). This version is adapted for Windows consoles, using Win32 APIs and ANSI escape sequences.
 
 ![image](https://github.com/user-attachments/assets/73783b8e-33cc-461e-8e07-118348ad3587)
-![image](https://github.com/user-attachments/assets/ae89d2b6-4324-4f7c-be51-32dbe7ed1561)
+
+Split view:
+![image](https://github.com/user-attachments/assets/c60da031-e92c-428b-831a-2a3db003ce81)
 
 ## Features
 
