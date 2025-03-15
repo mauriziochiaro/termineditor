@@ -780,70 +780,103 @@ void editorScroll() {
 }
 
 void editorDrawRows(struct abuf *ab) {
-    int y;
-    //int screen_width = E.screencols;
-    int edit_width = E.preview_mode == 1
-                         ? E.screencols / 2 - 2
-                         : E.screencols;  // Adjust for separator
+    // Pre-calculate how many columns for left & right when in split mode
+    int leftWidth = 0;
+    int rightWidth = 0;
+    // We’ll subtract 1 for the vertical bar if we like:
+    if (E.preview_mode == 1) {
+        leftWidth = E.screencols / 2;          // or (E.screencols / 2) - 1
+        rightWidth = E.screencols - leftWidth - 1;  // subtract 1 for the separator
+        if (rightWidth < 0) rightWidth = 0;
+    }
 
-    for (y = 0; y < E.screenrows; y++) {
+    for (int y = 0; y < E.screenrows; y++) {
         int filerow = y + E.rowoff;
 
         if (filerow >= E.numrows) {
-            if (E.numrows == 0 && y == E.screenrows / 3) {
-                char welcome[80];
-                int welcomelen =
-                    snprintf(welcome, sizeof(welcome),
-                             "Markdown Editor -- version %s", VERSION);
-                if (welcomelen > edit_width) welcomelen = edit_width;
+            // Print ~ if file is empty beyond that row
+            abAppend(ab, "~", 1);
 
-                int padding = (edit_width - welcomelen) / 2;
-                if (padding) {
-                    abAppend(ab, "~", 1);
-                    padding--;
-                }
-                while (padding--) abAppend(ab, " ", 1);
-
-                abAppend(ab, welcome, welcomelen);
-            } else {
-                abAppend(ab, "~", 1);
-            }
         } else {
-            // Se siamo in modalità preview-only, mostro solo il markdown
-            if (E.preview_mode == 2) {
-                char rendered[MAX_LINE_LENGTH * 3];
-                renderMarkdown(&E.rows[filerow], E.screencols, rendered, sizeof(rendered));
-                abAppend(ab, rendered, strlen(rendered));
-            } else {
-                // Codice normale per edit-only o il lato sinistro del
-                // split-view
-                int len = E.rows[filerow].rsize - E.coloff;
+            switch (E.preview_mode) {
+
+            /* ============= EDIT-ONLY MODE ============= */
+            case 0: {
+                // "Edit only": just show E.rows[filerow].render, truncated by coloff/screencols
+                EditorRow *row = &E.rows[filerow];
+                int len = row->rsize - E.coloff;
                 if (len < 0) len = 0;
-                if (len > edit_width) len = edit_width;
+                if (len > E.screencols) len = E.screencols;
 
                 if (len > 0) {
-                    if (filerow < E.numrows) {
-                        abAppend(ab, &E.rows[filerow].render[E.coloff], len);
+                    abAppend(ab, &row->render[E.coloff], len);
+                }
+                // If the row is shorter than the screen, we do nothing special,
+                // or you can manually pad with spaces. Usually just clearing
+                // to the end of the line (below) is enough.
+            } break;
+
+            /* ============= SPLIT-VIEW MODE ============= */
+            case 1: {
+                // Left Pane (editor text)
+                EditorRow *row = &E.rows[filerow];
+                
+                // 1) Up to leftWidth characters from row->render
+                int len = row->rsize - E.coloff;
+                if (len < 0) len = 0;
+                if (len > leftWidth) len = leftWidth;
+
+                // Write the substring of the row
+                if (len > 0) {
+                    abAppend(ab, &row->render[E.coloff], len);
+                }
+
+                // If shorter than leftWidth, pad with spaces so the '|' lines up
+                for (int i = len; i < leftWidth; i++) {
+                    abAppend(ab, " ", 1);
+                }
+
+                // 2) Vertical Bar Separator
+                abAppend(ab, "|", 1);
+
+                // 3) Right Pane (rendered Markdown)
+                {
+                    char rendered[4096]; // big enough
+                    renderMarkdown(row, rightWidth, rendered, sizeof(rendered));
+                    int rlen = (int)strlen(rendered);
+                    if (rlen > rightWidth) rlen = rightWidth;
+
+                    // Write that, truncated to rightWidth
+                    abAppend(ab, rendered, rlen);
+
+                    // Optionally pad with spaces if it's shorter
+                    for (int i = rlen; i < rightWidth; i++) {
+                        abAppend(ab, " ", 1);
                     }
                 }
-            }
+            } break;
+
+            /* ============= PREVIEW-ONLY MODE ============= */
+            case 2: {
+                // Use entire screen for rendered Markdown
+                EditorRow *row = &E.rows[filerow];
+                char rendered[4096];
+                renderMarkdown(row, E.screencols, rendered, sizeof(rendered));
+
+                int rlen = (int)strlen(rendered);
+                if (rlen > E.screencols) rlen = E.screencols;
+                abAppend(ab, rendered, rlen);
+
+                // No need to pad if you usually clear to end of line.
+            } break;
+
+            } // end switch
         }
 
-        abAppend(ab, ESC "[K", 3);  // Clear to end of line
+        // Clear to end of line so leftover old content isn’t visible
+        abAppend(ab, ESC "[K", 3);
 
-        // If in split view, draw preview
-        if (E.preview_mode == 1) {
-            abAppend(ab, " | ", 3);  // Separator
-
-            if (filerow < E.numrows) {
-                char rendered[MAX_LINE_LENGTH * 3];  // Extra space for formatting sequences
-                renderMarkdown(&E.rows[filerow], edit_width, rendered, sizeof(rendered));
-                abAppend(ab, rendered, strlen(rendered));
-            }
-
-            abAppend(ab, ESC "[K", 3);  // Clear to end of line
-        }
-
+        // Add a newline unless it's the bottom line
         if (y < E.screenrows - 1) {
             abAppend(ab, "\r\n", 2);
         }
