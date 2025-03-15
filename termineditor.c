@@ -17,7 +17,7 @@
 #include <string.h>
 #include <time.h>
 #include <windows.h>
-//#include "leak_tracker.h"
+// #include "leak_tracker.h"
 
 /* Defines */
 #define MAX_LINES 1000
@@ -193,13 +193,13 @@ int editorReadKey() {
             // Handle virtual key codes first
             switch (vk) {
                 case VK_LEFT:
-                    return ARROW_LEFT;  // 37
+                    return ARROW_LEFT;
                 case VK_UP:
-                    return ARROW_UP;  // 38
+                    return ARROW_UP;
                 case VK_RIGHT:
-                    return ARROW_RIGHT;  // 39
+                    return ARROW_RIGHT;
                 case VK_DOWN:
-                    return ARROW_DOWN;  // 40
+                    return ARROW_DOWN;
                 case VK_HOME:
                     return HOME_KEY;
                 case VK_END:
@@ -257,7 +257,7 @@ void editorAppendRow(char *s, size_t len) {
 
 void editorFreeRow(EditorRow *row) {
     free(row->chars);
-    free(row->render);  // Add this line
+    free(row->render);
 }
 
 void editorDelRow(int at) {
@@ -293,6 +293,7 @@ void editorUpdateRow(EditorRow *row) {
     render[idx] = '\0';
 
     // Store the rendered row
+    free(row->render);  // Free old render buffer
     row->render = render;
     row->rsize = idx;
 }
@@ -301,8 +302,7 @@ void editorRowInsertChar(EditorRow *row, int at, int c) {
     if (at < 0 || at > row->size) at = row->size;
 
     // Ensure we have enough capacity before inserting
-    if (row->size + 2 >
-        row->capacity) {  // +2 for the new char and null terminator
+    if (row->size + 2 > row->capacity) {  // +2 for new char + null terminator
         int new_capacity = row->capacity * 2;
         if (new_capacity == 0) new_capacity = 4;  // Minimum capacity
 
@@ -323,9 +323,10 @@ void editorRowInsertChar(EditorRow *row, int at, int c) {
 void editorRowAppendString(EditorRow *row, char *s, size_t len) {
     int new_size = row->size + len;
 
-    if (new_size > row->capacity) {
-        while (row->capacity < new_size) row->capacity *= 2;
+    if (new_size >= row->capacity) {
+        while (row->capacity < new_size + 1) row->capacity *= 2;
         row->chars = realloc(row->chars, row->capacity);
+        if (!row->chars) die("realloc in editorRowAppendString");
     }
 
     memcpy(&row->chars[row->size], s, len);
@@ -418,15 +419,16 @@ void editorDelChar() {
 
 char *editorRowsToString(int *buflen) {
     int totlen = 0;
-    int j;
-    for (j = 0; j < E.numrows; j++) totlen += E.rows[j].size + 1;
+    for (int j = 0; j < E.numrows; j++) {
+        totlen += E.rows[j].size + 1;
+    }
     *buflen = totlen;
 
     char *buf = malloc(totlen);
     if (!buf) return NULL;
-    
+
     char *p = buf;
-    for (j = 0; j < E.numrows; j++) {
+    for (int j = 0; j < E.numrows; j++) {
         memcpy(p, E.rows[j].chars, E.rows[j].size);
         p += E.rows[j].size;
         *p = '\n';
@@ -456,7 +458,6 @@ void editorOpen(char *filename) {
     }
 
     char linebuf[MAX_LINE_LENGTH];
-
     while (fgets(linebuf, sizeof(linebuf), fp) != NULL) {
         size_t linelen = strlen(linebuf);
 
@@ -563,23 +564,19 @@ void renderMarkdown(EditorRow *row, int width, char *buffer, int buffer_size) {
     if (headerLevel) {
         // Adjust style based on header level (1-6)
         if (headerLevel >= 1 && headerLevel <= 6) {
-            // Use different sizes/styles for different header levels
-            int fontSize =
-                7 - headerLevel;  // Larger value for h1, smaller for h6
+            int fontSize = 7 - headerLevel;  // bigger for h1, smaller for h6
             pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[%d;1m",
                             fontSize);
         }
-
         // Write the # marks for the header level
         for (int i = 0; i < headerLevel && pos < buffer_size - 2; i++) {
             buffer[pos++] = '#';
         }
-        // Then space after them, if there's room
+        // Then space
         if (pos < buffer_size - 2) {
             buffer[pos++] = ' ';
         }
-
-        // Copy the text after the # + space in the original line
+        // Copy the text after "# "
         pos += snprintf(&buffer[pos], buffer_size - pos, "%s",
                         &row->chars[headerLevel + 1]);
 
@@ -587,8 +584,7 @@ void renderMarkdown(EditorRow *row, int width, char *buffer, int buffer_size) {
         pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
     } else if (isListItem(row->chars)) {
         int i = 0;
-    
-        // 1) Expand *all* leading tabs/spaces:
+        // Expand leading spaces/tabs
         while (row->chars[i] == ' ' || row->chars[i] == '\t') {
             if (row->chars[i] == '\t') {
                 buffer[pos++] = ' ';
@@ -600,150 +596,113 @@ void renderMarkdown(EditorRow *row, int width, char *buffer, int buffer_size) {
             }
             i++;
         }
-    
-        // 2) Now row->chars[i] should be '-', '*', or '+'
-        //    Print bullet in bold:
-        pos += snprintf(&buffer[pos], buffer_size - pos,
-                        ESC "[1m%c" ESC "[0m",
+        // row->chars[i] should be '-', '*', or '+'
+        pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[1m%c" ESC "[0m",
                         row->chars[i]);
         i++;
-    
-        // 3) Skip *all* spaces/tabs that follow the bullet:
+        // Skip spaces after bullet
         while (row->chars[i] == ' ' || row->chars[i] == '\t') {
             i++;
         }
-    
-        // 4) Parse the remainder exactly like your "normal text" loop does,
-        //    i.e. checking for inline '*' or '`' etc.
-        //    Something like:
+        // Now parse normal inline stuff (bold, italic, code)
         int in_bold = 0, in_italic = 0, in_code = 0;
         while (i < row->size && pos < buffer_size - 2) {
             if (row->chars[i] == '\t') {
-                // expand it
                 buffer[pos++] = ' ';
                 while ((pos % TAB_SIZE) != 0 && pos < buffer_size - 1) {
                     buffer[pos++] = ' ';
                 }
                 i++;
-                continue;
-            }
-            // Check for bold "**"
-            if (row->chars[i] == '*' && i + 1 < row->size &&
-                row->chars[i + 1] == '*') {
+            } else if (row->chars[i] == '*' && i + 1 < row->size &&
+                       row->chars[i + 1] == '*') {
                 if (!in_bold) {
-                    // Turn bold on
                     pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[1m");
                 } else {
-                    // Turn bold off
                     pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
                 }
                 in_bold = !in_bold;
                 i += 2;
-            }
-            // Check for italic "*"
-            else if (row->chars[i] == '*') {
+            } else if (row->chars[i] == '*') {
                 if (!in_italic) {
-                    pos += snprintf(&buffer[pos], buffer_size - pos,
-                                    ESC "[3m");  // Italic on
+                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[3m");
                 } else {
-                    pos += snprintf(&buffer[pos], buffer_size - pos,
-                                    ESC "[0m");  // Italic off
+                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
                 }
                 in_italic = !in_italic;
                 i++;
-            }
-            // Check for inline code "`"
-            else if (row->chars[i] == '`') {
+            } else if (row->chars[i] == '`') {
                 if (!in_code) {
-                    pos += snprintf(&buffer[pos], buffer_size - pos,
-                                    ESC "[36m");  // code color
+                    pos +=
+                        snprintf(&buffer[pos], buffer_size - pos, ESC "[36m");
                 } else {
-                    pos += snprintf(&buffer[pos], buffer_size - pos,
-                                    ESC "[0m");  // reset
+                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
                 }
                 in_code = !in_code;
                 i++;
             } else {
-                // Normal character
                 if (pos < buffer_size - 2) buffer[pos++] = row->chars[i];
                 i++;
             }
         }
     } else if (isHorizontalRule(row->chars)) {
-        // A horizontal line across the full width
+        // a full-width line of '-'
         for (int i = 0; i < width - 1 && pos < buffer_size - 2; i++) {
             buffer[pos++] = '-';
         }
         if (pos < buffer_size) buffer[pos] = '\0';
     } else if (isCodeBlock(row->chars)) {
-        // Show the triple backticks in cyan
+        // triple backticks in cyan
         pos += snprintf(&buffer[pos], buffer_size - pos,
                         ESC "[36m```%s" ESC "[0m", &row->chars[3]);
     } else {
-        // Normal text, but parse inline **bold**, *italic*, `code`
+        // Normal text with possible inline **bold**, *italic*, `code`
         int i = 0;
         int in_bold = 0, in_italic = 0, in_code = 0;
-
         while (i < row->size && pos < buffer_size - 2) {
             if (row->chars[i] == '\t') {
-                // expand tabs to spaces
                 buffer[pos++] = ' ';
                 while ((pos % TAB_SIZE) != 0 && pos < buffer_size - 1) {
                     buffer[pos++] = ' ';
                 }
                 i++;
-            }
-            // Check for bold "**"
-            if (row->chars[i] == '*' && i + 1 < row->size &&
-                row->chars[i + 1] == '*') {
+            } else if (row->chars[i] == '*' && i + 1 < row->size &&
+                       row->chars[i + 1] == '*') {
                 if (!in_bold) {
-                    // Turn bold on
                     pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[1m");
                 } else {
-                    // Turn bold off
                     pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
                 }
                 in_bold = !in_bold;
                 i += 2;
-            }
-            // Check for italic "*"
-            else if (row->chars[i] == '*') {
+            } else if (row->chars[i] == '*') {
                 if (!in_italic) {
-                    pos += snprintf(&buffer[pos], buffer_size - pos,
-                                    ESC "[3m");  // Italic on
+                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[3m");
                 } else {
-                    pos += snprintf(&buffer[pos], buffer_size - pos,
-                                    ESC "[0m");  // Italic off
+                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
                 }
                 in_italic = !in_italic;
                 i++;
-            }
-            // Check for inline code "`"
-            else if (row->chars[i] == '`') {
+            } else if (row->chars[i] == '`') {
                 if (!in_code) {
-                    pos += snprintf(&buffer[pos], buffer_size - pos,
-                                    ESC "[36m");  // code color
+                    pos +=
+                        snprintf(&buffer[pos], buffer_size - pos, ESC "[36m");
                 } else {
-                    pos += snprintf(&buffer[pos], buffer_size - pos,
-                                    ESC "[0m");  // reset
+                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
                 }
                 in_code = !in_code;
                 i++;
             } else {
-                // Normal character
                 if (pos < buffer_size - 2) buffer[pos++] = row->chars[i];
                 i++;
             }
         }
-
-        // Close any unclosed formatting
+        // if any formatting left open, reset
         if ((in_bold || in_italic || in_code) && pos < buffer_size - 5) {
             pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
         }
     }
-
-    // Make sure it's null-terminated
-    if (pos < buffer_size - 1) {
+    // Ensure null-termination
+    if (pos < buffer_size) {
         buffer[pos] = '\0';
     } else {
         buffer[buffer_size - 1] = '\0';
@@ -758,138 +717,131 @@ void editorScroll() {
         E.rx = editorRowCxToRx(&E.rows[E.cy], E.cx);
     }
 
-    // If cursor is above the visible window, scroll up to cursor
     if (E.cy < E.rowoff) {
         E.rowoff = E.cy;
     }
-
-    // If cursor is below the visible window, scroll down to cursor
     if (E.cy >= E.rowoff + E.screenrows) {
         E.rowoff = E.cy - E.screenrows + 1;
     }
-
-    // If cursor is left of the visible window, scroll left to cursor
     if (E.rx < E.coloff) {
         E.coloff = E.rx;
     }
-
-    // If cursor is right of the visible window, scroll right to cursor
     if (E.rx >= E.coloff + E.screencols) {
         E.coloff = E.rx - E.screencols + 1;
     }
 }
 
+/*
+ * New code path for E.preview_mode == 1:
+ *   - We reserve a fixed 'edit_width' for the left side,
+ *   - Render text up to that width,
+ *   - Pad with spaces if shorter,
+ *   - Print a single "|",
+ *   - Then print the preview on the right.
+ * The other modes (0: edit only, 2: preview only) are unchanged.
+ */
 void editorDrawRows(struct abuf *ab) {
-    // Pre-calculate how many columns for left & right when in split mode
-    int leftWidth = 0;
-    int rightWidth = 0;
-    // We’ll subtract 1 for the vertical bar if we like:
-    if (E.preview_mode == 1) {
-        leftWidth = E.screencols / 2;          // or (E.screencols / 2) - 1
-        rightWidth = E.screencols - leftWidth - 1;  // subtract 1 for the separator
-        if (rightWidth < 0) rightWidth = 0;
-    }
-    for (int y = 0; y < E.screenrows; y++) {
+    int y;
+    // Keep the "edit-only" width as normal by default:
+    int edit_width = (E.preview_mode == 1)
+                         ? (E.screencols / 2)  // We'll pad to this exact column
+                         : E.screencols;
+
+    for (y = 0; y < E.screenrows; y++) {
         int filerow = y + E.rowoff;
-        /* Welcome message */
+
+        // If we are beyond the last row of text
         if (filerow >= E.numrows) {
+            // Show a "~" in the first column if no file content
             if (E.numrows == 0 && y == E.screenrows / 3) {
                 char welcome[80];
-                int welcomelen = snprintf(welcome, sizeof(welcome),
-                                          "Markdown Editor -- version %s", VERSION);
-                if (welcomelen > E.screencols) welcomelen = E.screencols;
-        
-                int padding = (E.screencols - welcomelen) / 2;
+                int welcomelen =
+                    snprintf(welcome, sizeof(welcome),
+                             "Markdown Editor -- version %s", VERSION);
+                if (welcomelen > edit_width) welcomelen = edit_width;
+
+                int padding = (edit_width - welcomelen) / 2;
                 if (padding) {
                     abAppend(ab, "~", 1);
                     padding--;
                 }
                 while (padding--) abAppend(ab, " ", 1);
-        
                 abAppend(ab, welcome, welcomelen);
             } else {
                 abAppend(ab, "~", 1);
             }
-        } else {
-            switch (E.preview_mode) {
 
-            /* ============= EDIT-ONLY MODE ============= */
-            case 0: {
-                // "Edit only": just show E.rows[filerow].render, truncated by coloff/screencols
-                EditorRow *row = &E.rows[filerow];
-                int len = row->rsize - E.coloff;
-                if (len < 0) len = 0;
-                if (len > E.screencols) len = E.screencols;
-
-                if (len > 0) {
-                    abAppend(ab, &row->render[E.coloff], len);
-                }
-                // If the row is shorter than the screen, we do nothing special,
-                // or you can manually pad with spaces. Usually just clearing
-                // to the end of the line (below) is enough.
-            } break;
-
-            /* ============= SPLIT-VIEW MODE ============= */
-            case 1: {
-                // Left Pane (editor text)
-                EditorRow *row = &E.rows[filerow];
-                
-                // 1) Up to leftWidth characters from row->render
-                int len = row->rsize - E.coloff;
-                if (len < 0) len = 0;
-                if (len > leftWidth) len = leftWidth;
-
-                // Write the substring of the row
-                if (len > 0) {
-                    abAppend(ab, &row->render[E.coloff], len);
-                }
-
-                // If shorter than leftWidth, pad with spaces so the '|' lines up
-                for (int i = len; i < leftWidth; i++) {
+            // If in split view, pad left side fully, add bar, etc.
+            if (E.preview_mode == 1) {
+                // Fill out remainder of left side if needed
+                int row_width_so_far = 1;  // we just wrote "~"
+                // pad until we reach edit_width
+                for (; row_width_so_far < edit_width; row_width_so_far++) {
                     abAppend(ab, " ", 1);
                 }
-
-                // 2) Vertical Bar Separator
+                // now print separator
                 abAppend(ab, "|", 1);
+                // no real text to preview, so do nothing else
+            }
 
-                // 3) Right Pane (rendered Markdown)
-                {
-                    char rendered[4096]; // big enough
-                    renderMarkdown(row, rightWidth, rendered, sizeof(rendered));
-                    int rlen = (int)strlen(rendered);
-                    if (rlen > rightWidth) rlen = rightWidth;
+        } else {
+            // We actually have a valid row of text
 
-                    // Write that, truncated to rightWidth
-                    abAppend(ab, rendered, rlen);
+            // If preview_mode == 2 => we only display rendered markdown
+            if (E.preview_mode == 2) {
+                char rendered[MAX_LINE_LENGTH * 3];
+                renderMarkdown(&E.rows[filerow], E.screencols, rendered,
+                               sizeof(rendered));
+                abAppend(ab, rendered, strlen(rendered));
+            }
+            // If preview_mode == 0 => only editing area
+            else if (E.preview_mode == 0) {
+                // Standard code for normal text
+                int len = E.rows[filerow].rsize - E.coloff;
+                if (len < 0) len = 0;
+                if (len > E.screencols) len = E.screencols;
+                if (len > 0) {
+                    abAppend(ab, &E.rows[filerow].render[E.coloff], len);
+                }
+            }
+            // If preview_mode == 1 => split view (left: raw text, right:
+            // preview)
+            else {
+                // Left side: raw text (up to edit_width)
+                int text_len = E.rows[filerow].rsize - E.coloff;
+                if (text_len < 0) text_len = 0;
+                if (text_len > edit_width) text_len = edit_width;
 
-                    // Optionally pad with spaces if it's shorter
-                    for (int i = rlen; i < rightWidth; i++) {
+                // 1) Append text_len characters from the row
+                if (text_len > 0) {
+                    abAppend(ab, &E.rows[filerow].render[E.coloff], text_len);
+                }
+                // 2) If the row is shorter than edit_width, pad with spaces
+                if (text_len < edit_width) {
+                    int padding = edit_width - text_len;
+                    while (padding--) {
                         abAppend(ab, " ", 1);
                     }
                 }
-            } break;
 
-            /* ============= PREVIEW-ONLY MODE ============= */
-            case 2: {
-                // Use entire screen for rendered Markdown
-                EditorRow *row = &E.rows[filerow];
-                char rendered[4096];
-                renderMarkdown(row, E.screencols, rendered, sizeof(rendered));
+                // 3) Append the vertical bar
+                abAppend(ab, "|", 1);
 
-                int rlen = (int)strlen(rendered);
-                if (rlen > E.screencols) rlen = E.screencols;
-                abAppend(ab, rendered, rlen);
-
-                // No need to pad if you usually clear to end of line.
-            } break;
-
-            } // end switch
+                // 4) Render the same row as Markdown in the remaining width
+                int preview_width =
+                    E.screencols - edit_width - 1;  // minus 1 for the bar
+                if (preview_width < 1) preview_width = 1;  // safety
+                char rendered[MAX_LINE_LENGTH * 3];
+                renderMarkdown(&E.rows[filerow], preview_width, rendered,
+                               sizeof(rendered));
+                abAppend(ab, rendered, strlen(rendered));
+            }
         }
 
-        // Clear to end of line so leftover old content isn’t visible
+        // Clear to end of the line
         abAppend(ab, ESC "[K", 3);
 
-        // Add a newline unless it's the bottom line
+        // Move to the next line
         if (y < E.screenrows - 1) {
             abAppend(ab, "\r\n", 2);
         }
@@ -931,7 +883,7 @@ void editorDrawMessageBar(struct abuf *ab) {
         abAppend(ab, E.statusmsg, msglen);
 
     if (E.statusmsg[0] == '\0') {
-        // Show help information if no status message
+        // Show help if no status message
         abAppend(ab, WELCOME_MESSAGE, strlen(WELCOME_MESSAGE));
     }
 }
@@ -977,9 +929,8 @@ void editorMoveCursor(int key) {
             if (E.cx > 0) {
                 E.cx--;
             } else if (E.cy > 0) {
-                // Move to end of previous line
                 E.cy--;
-                if (E.cy < E.numrows)  // Make sure we don't go out of bounds
+                if (E.cy < E.numrows)
                     E.cx = E.rows[E.cy].size;
                 else
                     E.cx = 0;
@@ -995,14 +946,13 @@ void editorMoveCursor(int key) {
             if (row && E.cx < row->size) {
                 E.cx++;
             } else if (row && E.cx == row->size && E.cy < E.numrows - 1) {
-                // Move to beginning of next line
                 E.cy++;
                 E.cx = 0;
             }
             break;
     }
 
-    // Adjust cursor if the line it's now on is shorter than previous line
+    // Adjust cursor if new line is shorter
     row = (E.cy >= E.numrows || E.cy < 0) ? NULL : &E.rows[E.cy];
     int rowlen = row ? row->size : 0;
     if (E.cx > rowlen) {
@@ -1014,7 +964,7 @@ void editorProcessKeypress() {
     static int quit_times = 2;
     int c = editorReadKey();
 
-    // Se siamo in modalità preview-only, gestiamo solo alcuni tasti
+    // If in preview-only mode (E.preview_mode == 2), we ignore most keys
     if (E.preview_mode == 2) {
         switch (c) {
             case CTRL_KEY('q'):
@@ -1048,10 +998,11 @@ void editorProcessKeypress() {
                 editorMoveCursor(c);
                 break;
             default:
-                // Ignora altri tasti in modalità preview-only
+                // Ignore other keys
                 return;
         }
     } else {
+        // Normal or split-view modes
         switch (c) {
             case '\r':
                 editorInsertNewline();
@@ -1087,8 +1038,7 @@ void editorProcessKeypress() {
                                            : "preview only");
                 break;
 
-            // Backspace
-            case 127:
+            case 127:  // Backspace
             case CTRL_KEY('h'):
                 editorDelChar();
                 break;
@@ -1097,7 +1047,7 @@ void editorProcessKeypress() {
                 editorSetStatusMessage("Search function not implemented yet");
                 break;
 
-            // Handle special keys from our enum
+            // Movement
             case ARROW_LEFT:
             case ARROW_RIGHT:
             case ARROW_UP:
@@ -1148,27 +1098,24 @@ void editorProcessKeypress() {
 void abAppend(struct abuf *ab, const char *s, int len) {
     if (len <= 0) return;
 
-    char *new = realloc(ab->b, ab->len + len);
-
-    if (new == NULL) return;
-
-    memcpy(&new[ab->len], s, len);
-    ab->b = new;
+    char *newbuf = realloc(ab->b, ab->len + len);
+    if (!newbuf) return;
+    memcpy(&newbuf[ab->len], s, len);
+    ab->b = newbuf;
     ab->len += len;
 }
 
-void abFree(struct abuf *ab) { 
+void abFree(struct abuf *ab) {
     if (ab->b) {
         free(ab->b);
-        ab->b = NULL;  // Prevent future double free attempts
-        ab->len = 0;   // Reset length too
+        ab->b = NULL;
+        ab->len = 0;
     }
 }
 
 int editorRowCxToRx(EditorRow *row, int cx) {
     int rx = 0;
-    int j;
-    for (j = 0; j < cx; j++) {
+    for (int j = 0; j < cx; j++) {
         if (row->chars[j] == '\t') rx += (TAB_SIZE - 1) - (rx % TAB_SIZE);
         rx++;
     }
@@ -1192,7 +1139,7 @@ void editorInit() {
 
     if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
 
-    // Reserve two rows for the status and message bars.
+    // Reserve two rows for the status and message bars
     E.screenrows -= 2;
 }
 
