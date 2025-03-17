@@ -840,11 +840,8 @@ void editorDrawRows(struct abuf *ab) {
 
         // Clear to end of the line
         abAppend(ab, ESC "[K", 3);
-
-        // Move to the next line
-        if (y < E.screenrows - 1) {
-            abAppend(ab, "\r\n", 2);
-        }
+        // Always append newline:
+        abAppend(ab, "\r\n", 2);
     }
 }
 
