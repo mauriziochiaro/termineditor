@@ -886,11 +886,32 @@ void editorDrawMessageBar(struct abuf *ab) {
 }
 
 void editorRefreshScreen() {
+    // Re-check actual console dimensions each time
+    int rows, cols;
+    if (getWindowSize(&rows, &cols) != -1) {
+        E.screenrows = rows - 2;  // leave 2 lines for status + message bars
+        E.screencols = cols;
+    }
+
+    // -- CLAMPING LOGIC --
+    if (E.numrows == 0) {
+        E.cy = 0;
+        E.cx = 0;
+    } else {
+        if (E.cy >= E.numrows) {
+            E.cy = E.numrows - 1;
+            E.cx = E.rows[E.cy].size;
+        }
+        int rowlen = E.rows[E.cy].size;
+        if (E.cx > rowlen) {
+            E.cx = rowlen;
+        }
+    }
+
     DWORD written;
     editorScroll();
 
     struct abuf ab = ABUF_INIT;
-
     abAppend(&ab, ESC "[?25l", 6);  // Hide cursor
     abAppend(&ab, ESC "[H", 3);     // Position cursor at top-left
 
