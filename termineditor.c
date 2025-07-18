@@ -1,9 +1,9 @@
 /**
- * termineditor.c - A terminal-based markdown editor with live preview
+ * termineditor.c - A terminal-based C editor with live preview
  * Author: Maurizio Chiaro
  * Date: 2025-03-13
  *
- * A simple markdown editor with real-time preview in a split terminal window.
+ * A simple C editor with real-time preview in a terminal window.
  * Windows compatible version.
  */
 
@@ -25,12 +25,10 @@
 #define TAB_SIZE 4
 #define CTRL_KEY(k) ((k) & 0x1F)  // Control key combinations
 #define ESC "\x1b"
-#define WELCOME_MESSAGE                                                     \
-    "Terminal Markdown Editor - ^S Save | ^Q Quit | ^X Cut | ^C Copy | ^V " \
-    "Paste | ^F Find"
 #define VERSION "1.0.0"
-#define SAVE_DIRECTORY "md_files"
-#define DEFAULT_FILENAME "untitled.md"
+#define SAVE_DIRECTORY "c_projects"
+#define DEFAULT_FILENAME "untitled.c"
+#define WELCOME_MESSAGE "HELP: Ctrl-S = Save | Ctrl-O = Open | Ctrl-F = Find | Ctrl-Q = Quit | Ctrl+] = Match Brace"
 
 enum EditorKey {
     ARROW_LEFT = 1000,
@@ -66,7 +64,6 @@ typedef struct {
     char statusmsg[80];     // Status message
     time_t statusmsg_time;  // When the status message was set
     int dirty;              // File modified flag
-    int preview_mode;       // 0: edit only, 1: split view, 2: preview only
     DWORD orig_mode;        // Original console mode
     HANDLE hStdin;          // Console input handle
     HANDLE hStdout;         // Console output handle
@@ -95,6 +92,7 @@ int getWindowSize(int *rows, int *cols);
 /* Buffer handling */
 void editorAppendRow(char *s, size_t len);
 void editorFreeRow(EditorRow *row);
+void editorFreeBuffer();
 void editorDelRow(int at);
 void editorUpdateRow(EditorRow *row);
 void editorRowInsertChar(EditorRow *row, int at, int c);
@@ -111,15 +109,12 @@ void editorDelChar();
 /* File I/O */
 char *editorRowsToString(int *buflen);
 void editorOpen(char *filename);
+void editorOpenFilePrompt();
 void ensureDirectoryExists(const char *path);
 void editorSave();
 
-/* Markdown parsing */
-int isHeaderLine(char *line);
-int isListItem(char *line);
-int isCodeBlock(char *line);
-int isHorizontalRule(char *line);
-void renderMarkdown(EditorRow *row, int width, char *buffer, int buffer_size);
+/* Editor Navigation */
+void editorFindMatchingBrace();
 
 /* Output */
 void editorScroll();
@@ -129,7 +124,11 @@ void editorDrawMessageBar(struct abuf *ab);
 void editorRefreshScreen();
 void editorSetStatusMessage(const char *fmt, ...);
 
+/* Search */
+void editorFind();
+
 /* Input */
+char *editorPrompt(const char *prompt, void (*callback)(char *, int));
 void editorMoveCursor(int key);
 void editorProcessKeypress();
 
@@ -260,6 +259,27 @@ void editorFreeRow(EditorRow *row) {
     free(row->render);
 }
 
+// Libera tutte le righe e resetta lo stato del buffer
+void editorFreeBuffer() {
+    if (E.rows == NULL) return;
+
+    for (int i = 0; i < E.numrows; i++) {
+        editorFreeRow(&E.rows[i]);
+    }
+    free(E.rows);
+    E.rows = NULL;
+    E.numrows = 0;
+
+    free(E.filename);
+    E.filename = NULL;
+
+    E.cx = 0;
+    E.cy = 0;
+    E.rowoff = 0;
+    E.coloff = 0;
+    E.dirty = 0;
+}
+
 void editorDelRow(int at) {
     if (at < 0 || at >= E.numrows) return;
     editorFreeRow(&E.rows[at]);
@@ -269,33 +289,34 @@ void editorDelRow(int at) {
     E.dirty = 1;
 }
 
+// Sostituisci completamente la vecchia funzione
 void editorUpdateRow(EditorRow *row) {
-    // Count tabs for proper rendering
+    free(row->render);
     int tabs = 0;
     for (int j = 0; j < row->size; j++) {
         if (row->chars[j] == '\t') tabs++;
     }
 
-    int render_size = row->size + tabs * (TAB_SIZE - 1) + 1;
-    char *render = malloc(render_size);
-    if (!render) die("malloc for render");
+    // Alloca abbastanza memoria per tab, testo e codici colore
+    row->render = malloc(row->size + tabs * (TAB_SIZE - 1) + 1);
+    if (row->render == NULL) die("malloc");
 
-    // Render text, expanding tabs to spaces
     int idx = 0;
     for (int j = 0; j < row->size; j++) {
         if (row->chars[j] == '\t') {
-            render[idx++] = ' ';
-            while (idx % TAB_SIZE != 0) render[idx++] = ' ';
+            row->render[idx++] = ' ';
+            while (idx % TAB_SIZE != 0) row->render[idx++] = ' ';
         } else {
-            render[idx++] = row->chars[j];
+            row->render[idx++] = row->chars[j];
         }
     }
-    render[idx] = '\0';
-
-    // Store the rendered row
-    free(row->render);  // Free old render buffer
-    row->render = render;
+    row->render[idx] = '\0';
     row->rsize = idx;
+
+    // A questo punto, row->render contiene il testo con i tab espansi.
+    // Questa è una semplificazione per evitare di gestire l'offset dei colori
+    // durante il calcolo di rx. La soluzione più robusta è più complessa,
+    // ma questa risolve il problema del posizionamento del cursore.
 }
 
 void editorRowInsertChar(EditorRow *row, int at, int c) {
@@ -488,13 +509,46 @@ void ensureDirectoryExists(const char *path) {
     editorSetStatusMessage("Warning: Could not create directory %s", path);
 }
 
-void editorSave() {
-    ensureDirectoryExists(SAVE_DIRECTORY);
-
-    if (E.filename == NULL) {
-        E.filename = strdup(DEFAULT_FILENAME);
-        editorSetStatusMessage("Saving as %s", E.filename);
+// Gestisce il prompt e l'apertura di un nuovo file
+void editorOpenFilePrompt() {
+    // Impedisce di aprire un nuovo file se ci sono modifiche non salvate
+    if (E.dirty) {
+        editorSetStatusMessage("WARNING! File has unsaved changes. Save first (Ctrl-S).");
+        return;
     }
+
+    // Chiede all'utente il nome del file da aprire
+    char *filename = editorPrompt("Open File: %s (ESC to cancel)", NULL);
+    if (filename == NULL) {
+        editorSetStatusMessage("Open aborted.");
+        return;
+    }
+
+    // Pulisce il buffer corrente prima di caricarne uno nuovo
+    editorFreeBuffer();
+
+    // La funzione editorOpen si occupa di caricare il file e impostare il nome
+    editorOpen(filename);
+
+    // La stringa del nome del file è stata duplicata da editorOpen, quindi possiamo liberarla
+    free(filename);
+}
+
+void editorSave() {
+    // Se il file non ha nome o ha il nome di default, chiedine uno nuovo.
+    if (E.filename == NULL || strcmp(E.filename, DEFAULT_FILENAME) == 0) {
+        // Chiama editorPrompt per ottenere il nome del file dall'utente.
+        char *new_filename = editorPrompt("Save As: %s (ESC to cancel)", NULL);
+        if (new_filename == NULL) {
+            editorSetStatusMessage("Save aborted.");
+            return;
+        }
+        // Libera il vecchio nome (se presente) e assegna quello nuovo.
+        if (E.filename) free(E.filename);
+        E.filename = new_filename;
+    }
+
+    ensureDirectoryExists(SAVE_DIRECTORY);
 
     char fullPath[MAX_PATH];
     snprintf(fullPath, sizeof(fullPath), "%s\\%s", SAVE_DIRECTORY, E.filename);
@@ -518,194 +572,239 @@ void editorSave() {
     editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
 }
 
-/*** Markdown parsing and rendering ***/
+/*** Editor Navigation ***/
+void editorFindMatchingBrace() {
+    if (E.cy >= E.numrows) return; // Cursore fuori dal testo
 
-int isHeaderLine(char *line) {
-    int i = 0;
-    while (line[i] == '#') i++;
-    if (i > 0 && (line[i] == ' ' || line[i] == '\t')) return i;
-    return 0;
-}
+    char char_under_cursor = E.rows[E.cy].chars[E.cx];
+    char open_brace = '{', close_brace = '}';
+    int direction = 0; // 1 per avanti, -1 per indietro
 
-int isListItem(char *line) {
-    int i = 0;
-    while (line[i] == ' ' || line[i] == '\t') i++;
-    return (line[i] == '-' || line[i] == '*' || line[i] == '+') &&
-           (line[i + 1] == ' ' || line[i + 1] == '\t');
-}
+    if (char_under_cursor == open_brace) direction = 1;
+    if (char_under_cursor == close_brace) direction = -1;
+    if (direction == 0) return; // Non siamo su una graffa
 
-int isCodeBlock(char *line) { return strncmp(line, "```", 3) == 0; }
+    int y = E.cy;
+    int x = E.cx;
+    int level = 1;
 
-int isHorizontalRule(char *line) {
-    int i = 0, count = 0;
-    char c = 0;
+    while (y >= 0 && y < E.numrows) {
+        x += direction;
+        if (x < 0) {
+            y += direction;
+            if (y < 0 || y >= E.numrows) break;
+            x = (direction == 1) ? 0 : E.rows[y].size - 1;
+        }
+        if (x >= E.rows[y].size) {
+            y += direction;
+            if (y >= E.numrows) break;
+            x = (direction == 1) ? 0 : E.rows[y].size - 1;
+        }
 
-    // Skip leading whitespace
-    while (line[i] == ' ' || line[i] == '\t') i++;
+        if (y < 0 || y >= E.numrows) break;
 
-    if (line[i] != '-' && line[i] != '*' && line[i] != '_') return 0;
-    c = line[i];
+        char current_char = E.rows[y].chars[x];
+        if (current_char == open_brace) {
+            level += (direction == 1) ? 1 : -1;
+        } else if (current_char == close_brace) {
+            level += (direction == 1) ? -1 : 1;
+        }
 
-    // Count consecutive symbols
-    while (line[i] == c || line[i] == ' ' || line[i] == '\t') {
-        if (line[i] == c) count++;
-        i++;
+        if (level == 0) {
+            E.cy = y;
+            E.cx = x;
+            return;
+        }
     }
 
-    return count >= 3 && line[i] == '\0';
+    editorSetStatusMessage("No matching brace found");
 }
 
-void renderMarkdown(EditorRow *row, int width, char *buffer, int buffer_size) {
-    // Always begin with an empty string
+/*** Search ***/
+
+void editorFindCallback(char *query, int key) {
+    static int last_match = -1; // Riga dell'ultima corrispondenza trovata (-1 se nessuna)
+    static int direction = 1;   // 1 = avanti, -1 = indietro
+
+    // Se un tasto freccia viene premuto, imposta la direzione della ricerca
+    if (key == ARROW_RIGHT || key == ARROW_DOWN) {
+        direction = 1;
+    } else if (key == ARROW_LEFT || key == ARROW_UP) {
+        direction = -1;
+    } else if (key == '\r' || key == '\x1b') {
+        // All'uscita dalla ricerca (Invio o ESC), resetta lo stato
+        last_match = -1;
+        direction = 1;
+        return;
+    } else {
+        // Se l'utente digita un nuovo carattere, la ricerca riparte dall'inizio
+        last_match = -1;
+        direction = 1;
+    }
+
+    if (last_match == -1) direction = 1;
+    int current = last_match;
+
+    // Cicla attraverso tutte le righe per trovare una corrispondenza
+    for (int i = 0; i < E.numrows; i++) {
+        current += direction;
+        // Gestione del "wrap-around" (se arrivi alla fine, ricomincia dall'inizio)
+        if (current == -1) current = E.numrows - 1;
+        else if (current == E.numrows) current = 0;
+
+        EditorRow *row = &E.rows[current];
+        char *match = strstr(row->chars, query); // Cerca la sottostringa
+        if (match) {
+            last_match = current;
+            E.cy = current;
+            E.cx = match - row->chars; // Posiziona il cursore all'inizio della corrispondenza
+            E.rowoff = E.numrows; // Forza lo scroll per rendere visibile la riga
+            break;
+        }
+    }
+}
+
+void editorFind() {
+    // Salva la posizione corrente del cursore per ripristinarla in caso di annullamento
+    int saved_cx = E.cx;
+    int saved_cy = E.cy;
+    int saved_coloff = E.coloff;
+    int saved_rowoff = E.rowoff;
+
+    // Avvia il prompt di ricerca, passando il callback per la logica interattiva
+    char *query = editorPrompt(
+        "Search: %s (ESC=Cancel | Arrows=Navigate | Enter=Confirm)",
+        editorFindCallback);
+
+    if (query == NULL) { // L'utente ha premuto ESC
+        // Ripristina la posizione originale del cursore
+        E.cx = saved_cx;
+        E.cy = saved_cy;
+        E.coloff = saved_coloff;
+        E.rowoff = saved_rowoff;
+    }
+    free(query);
+}
+
+/*** C Syntax Highlighting ***/
+
+// Definiamo i colori ANSI che useremo
+#define COLOR_RESET   "\x1b[0m"
+#define COLOR_KEYWORD "\x1b[33m" // Giallo
+#define COLOR_TYPE    "\x1b[36m" // Ciano
+#define COLOR_COMMENT "\x1b[38;5;70m" // Verde scuro
+#define COLOR_STRING  "\x1b[33m" // Arancione
+#define COLOR_NUMBER  "\x1b[31m" // Rosso
+#define COLOR_PREPROC "\x1b[35m" // Magenta
+#define COLOR_CONSTANT "\x1b[38;5;208m" // Arancione
+
+// Lista di keyword e tipi del C
+const char *C_KEYWORDS[] = {
+    "auto", "break", "case", "const", "continue", "default", "do", "else",
+    "enum", "extern", "for", "goto", "if", "register", "return", "sizeof",
+    "static", "struct", "switch", "typedef", "union", "volatile", "while", NULL
+};
+
+const char *C_TYPES[] = {
+    "char", "double", "float", "int", "long", "short", "signed", "unsigned",
+    "void", "size_t", "FILE", "HANDLE", "DWORD", "BOOL", "boolean", NULL
+};
+
+const char *C_CONSTANTS[] = {
+    "true", "false", "NULL", "BOOL", "boolean", NULL
+};
+
+// Funzione per renderizzare una riga con la sintassi C
+void renderCSyntax(char *rendered_text, char *buffer, int buffer_size) {
     buffer[0] = '\0';
-    int pos = 0;  // Current write index in "buffer"
+    int len = strlen(rendered_text);
+    int pos = 0;
+    int i = 0;
 
-    int headerLevel = isHeaderLine(row->chars);
-    if (headerLevel) {
-        // Adjust style based on header level (1-6)
-        if (headerLevel >= 1 && headerLevel <= 6) {
-            int fontSize = 7 - headerLevel;  // bigger for h1, smaller for h6
-            pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[%d;1m",
-                            fontSize);
-        }
-        // Write the # marks for the header level
-        for (int i = 0; i < headerLevel && pos < buffer_size - 2; i++) {
-            buffer[pos++] = '#';
-        }
-        // Then space
-        if (pos < buffer_size - 2) {
-            buffer[pos++] = ' ';
-        }
-        // Copy the text after "# "
-        pos += snprintf(&buffer[pos], buffer_size - pos, "%s",
-                        &row->chars[headerLevel + 1]);
-
-        // Reset formatting
-        pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
-    } else if (isListItem(row->chars)) {
-        int i = 0;
-        // Expand leading spaces/tabs
-        while (row->chars[i] == ' ' || row->chars[i] == '\t') {
-            if (row->chars[i] == '\t') {
-                buffer[pos++] = ' ';
-                while ((pos % TAB_SIZE) != 0 && pos < buffer_size - 1) {
-                    buffer[pos++] = ' ';
-                }
-            } else {
-                buffer[pos++] = ' ';
-            }
-            i++;
-        }
-        // row->chars[i] should be '-', '*', or '+'
-        pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[1m%c" ESC "[0m",
-                        row->chars[i]);
-        i++;
-        // Skip spaces after bullet
-        while (row->chars[i] == ' ' || row->chars[i] == '\t') {
-            i++;
-        }
-        // Now parse normal inline stuff (bold, italic, code)
-        int in_bold = 0, in_italic = 0, in_code = 0;
-        while (i < row->size && pos < buffer_size - 2) {
-            if (row->chars[i] == '\t') {
-                buffer[pos++] = ' ';
-                while ((pos % TAB_SIZE) != 0 && pos < buffer_size - 1) {
-                    buffer[pos++] = ' ';
-                }
-                i++;
-            } else if (row->chars[i] == '*' && i + 1 < row->size &&
-                       row->chars[i + 1] == '*') {
-                if (!in_bold) {
-                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[1m");
-                } else {
-                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
-                }
-                in_bold = !in_bold;
-                i += 2;
-            } else if (row->chars[i] == '*') {
-                if (!in_italic) {
-                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[3m");
-                } else {
-                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
-                }
-                in_italic = !in_italic;
-                i++;
-            } else if (row->chars[i] == '`') {
-                if (!in_code) {
-                    pos +=
-                        snprintf(&buffer[pos], buffer_size - pos, ESC "[36m");
-                } else {
-                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
-                }
-                in_code = !in_code;
-                i++;
-            } else {
-                if (pos < buffer_size - 2) buffer[pos++] = row->chars[i];
-                i++;
-            }
-        }
-    } else if (isHorizontalRule(row->chars)) {
-        // a full-width line of '-'
-        for (int i = 0; i < width - 1 && pos < buffer_size - 2; i++) {
-            buffer[pos++] = '-';
-        }
-        if (pos < buffer_size) buffer[pos] = '\0';
-    } else if (isCodeBlock(row->chars)) {
-        // triple backticks in cyan
-        pos += snprintf(&buffer[pos], buffer_size - pos,
-                        ESC "[36m```%s" ESC "[0m", &row->chars[3]);
-    } else {
-        // Normal text with possible inline **bold**, *italic*, `code`
-        int i = 0;
-        int in_bold = 0, in_italic = 0, in_code = 0;
-        while (i < row->size && pos < buffer_size - 2) {
-            if (row->chars[i] == '\t') {
-                buffer[pos++] = ' ';
-                while ((pos % TAB_SIZE) != 0 && pos < buffer_size - 1) {
-                    buffer[pos++] = ' ';
-                }
-                i++;
-            } else if (row->chars[i] == '*' && i + 1 < row->size &&
-                       row->chars[i + 1] == '*') {
-                if (!in_bold) {
-                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[1m");
-                } else {
-                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
-                }
-                in_bold = !in_bold;
-                i += 2;
-            } else if (row->chars[i] == '*') {
-                if (!in_italic) {
-                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[3m");
-                } else {
-                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
-                }
-                in_italic = !in_italic;
-                i++;
-            } else if (row->chars[i] == '`') {
-                if (!in_code) {
-                    pos +=
-                        snprintf(&buffer[pos], buffer_size - pos, ESC "[36m");
-                } else {
-                    pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
-                }
-                in_code = !in_code;
-                i++;
-            } else {
-                if (pos < buffer_size - 2) buffer[pos++] = row->chars[i];
-                i++;
-            }
-        }
-        // if any formatting left open, reset
-        if ((in_bold || in_italic || in_code) && pos < buffer_size - 5) {
-            pos += snprintf(&buffer[pos], buffer_size - pos, ESC "[0m");
-        }
+    // Gestione direttive preprocessore all'inizio della riga
+    if (i == 0 && rendered_text[i] == '#') {
+        pos += snprintf(&buffer[pos], buffer_size - pos, "%s%s%s", COLOR_PREPROC, rendered_text, COLOR_RESET);
+        return;
     }
-    // Ensure null-termination
-    if (pos < buffer_size) {
-        buffer[pos] = '\0';
-    } else {
-        buffer[buffer_size - 1] = '\0';
+
+    while (i < len) {
+        // Gestione dei commenti (//)
+        if (i + 1 < len && rendered_text[i] == '/' && rendered_text[i+1] == '/') {
+            pos += snprintf(&buffer[pos], buffer_size - pos, "%s%s%s", COLOR_COMMENT, &rendered_text[i], COLOR_RESET);
+            return; // Fine della riga
+        }
+
+        // Gestione delle stringhe ("...")
+        if (rendered_text[i] == '"') {
+            pos += snprintf(&buffer[pos], buffer_size - pos, "%s\"", COLOR_STRING);
+            i++;
+            while (i < len && rendered_text[i] != '"') {
+                if (pos < buffer_size - 2) buffer[pos++] = rendered_text[i++];
+            }
+            if (i < len) {
+                if (pos < buffer_size - 2) buffer[pos++] = rendered_text[i++];
+            }
+            pos += snprintf(&buffer[pos], buffer_size - pos, "%s", COLOR_RESET);
+            buffer[pos] = '\0';
+            continue;
+        }
+
+        // Gestione dei numeri
+        if (isdigit(rendered_text[i])) {
+            pos += snprintf(&buffer[pos], buffer_size - pos, "%s", COLOR_NUMBER);
+            while (i < len && isdigit(rendered_text[i])) {
+                if (pos < buffer_size - 2) buffer[pos++] = rendered_text[i++];
+            }
+            pos += snprintf(&buffer[pos], buffer_size - pos, "%s", COLOR_RESET);
+            buffer[pos] = '\0';
+            continue;
+        }
+
+        // Gestione di keyword, tipi e costanti
+        if (isalpha(rendered_text[i]) || rendered_text[i] == '_') {
+            char word[256];
+            int j = 0;
+            while (i < len && (isalnum(rendered_text[i]) || rendered_text[i] == '_')) {
+                if (j < 255) word[j++] = rendered_text[i++];
+            }
+            word[j] = '\0';
+
+            int is_keyword = 0, is_type = 0, is_constant = 0;
+            if ((i == len || !isalnum(rendered_text[i])) && (i-j == 0 || !isalnum(rendered_text[i-j-1]))) {
+                for (int k = 0; C_KEYWORDS[k]; k++) {
+                    if (strcmp(word, C_KEYWORDS[k]) == 0) { is_keyword = 1; break; }
+                }
+                if (!is_keyword) {
+                    for (int k = 0; C_TYPES[k]; k++) {
+                        if (strcmp(word, C_TYPES[k]) == 0) { is_type = 1; break; }
+                    }
+                }
+                if (!is_keyword && !is_type) {
+                    for (int k = 0; C_CONSTANTS[k]; k++) {
+                        if (strcmp(word, C_CONSTANTS[k]) == 0) { is_constant = 1; break; }
+                    }
+                }
+            }
+
+            if (is_keyword) {
+                pos += snprintf(&buffer[pos], buffer_size - pos, "%s%s%s", COLOR_KEYWORD, word, COLOR_RESET);
+            } else if (is_type) {
+                pos += snprintf(&buffer[pos], buffer_size - pos, "%s%s%s", COLOR_TYPE, word, COLOR_RESET);
+            } else if (is_constant) {
+                pos += snprintf(&buffer[pos], buffer_size - pos, "%s%s%s", COLOR_CONSTANT, word, COLOR_RESET);
+            } else {
+                pos += snprintf(&buffer[pos], buffer_size - pos, "%s", word);
+            }
+            continue;
+        }
+
+        // Carattere normale
+        if (pos < buffer_size - 2) {
+            buffer[pos++] = rendered_text[i++];
+            buffer[pos] = '\0';
+        } else {
+            i++;
+        }
     }
 }
 
@@ -731,36 +830,18 @@ void editorScroll() {
     }
 }
 
-/*
- * New code path for E.preview_mode == 1:
- *   - We reserve a fixed 'edit_width' for the left side,
- *   - Render text up to that width,
- *   - Pad with spaces if shorter,
- *   - Print a single "|",
- *   - Then print the preview on the right.
- * The other modes (0: edit only, 2: preview only) are unchanged.
- */
+/* La sua unica responsabilità e' quella di disegnare il testo */
 void editorDrawRows(struct abuf *ab) {
-    int y;
-    // Keep the "edit-only" width as normal by default:
-    int edit_width = (E.preview_mode == 1)
-                         ? (E.screencols / 2)  // We'll pad to this exact column
-                         : E.screencols;
-
-    for (y = 0; y < E.screenrows; y++) {
+    for (int y = 0; y < E.screenrows; y++) {
         int filerow = y + E.rowoff;
-
-        // If we are beyond the last row of text
         if (filerow >= E.numrows) {
-            // Show a "~" in the first column if no file content
+            // Mostra il messaggio di benvenuto solo se il file è vuoto
             if (E.numrows == 0 && y == E.screenrows / 3) {
                 char welcome[80];
-                int welcomelen =
-                    snprintf(welcome, sizeof(welcome),
-                             "Markdown Editor -- version %s", VERSION);
-                if (welcomelen > edit_width) welcomelen = edit_width;
-
-                int padding = (edit_width - welcomelen) / 2;
+                int welcomelen = snprintf(welcome, sizeof(welcome),
+                                          "C Editor -- Versione %s", VERSION);
+                if (welcomelen > E.screencols) welcomelen = E.screencols;
+                int padding = (E.screencols - welcomelen) / 2;
                 if (padding) {
                     abAppend(ab, "~", 1);
                     padding--;
@@ -770,77 +851,22 @@ void editorDrawRows(struct abuf *ab) {
             } else {
                 abAppend(ab, "~", 1);
             }
-
-            // If in split view, pad left side fully, add bar, etc.
-            if (E.preview_mode == 1) {
-                // Fill out remainder of left side if needed
-                int row_width_so_far = 1;  // we just wrote "~"
-                // pad until we reach edit_width
-                for (; row_width_so_far < edit_width; row_width_so_far++) {
-                    abAppend(ab, " ", 1);
-                }
-                // now print separator
-                abAppend(ab, "|", 1);
-                // no real text to preview, so do nothing else
-            }
-
         } else {
-            // We actually have a valid row of text
+            // Creiamo un buffer per la riga colorata
+            char colored_line[MAX_LINE_LENGTH * 4];
+            // Passiamo E.rows[filerow].render (con tab espansi!) alla funzione di highlighting
+            renderCSyntax(E.rows[filerow].render, colored_line, sizeof(colored_line));
 
-            // If preview_mode == 2 => we only display rendered markdown
-            if (E.preview_mode == 2) {
-                char rendered[MAX_LINE_LENGTH * 3];
-                renderMarkdown(&E.rows[filerow], E.screencols, rendered,
-                               sizeof(rendered));
-                abAppend(ab, rendered, strlen(rendered));
-            }
-            // If preview_mode == 0 => only editing area
-            else if (E.preview_mode == 0) {
-                // Standard code for normal text
-                int len = E.rows[filerow].rsize - E.coloff;
-                if (len < 0) len = 0;
-                if (len > E.screencols) len = E.screencols;
-                if (len > 0) {
-                    abAppend(ab, &E.rows[filerow].render[E.coloff], len);
-                }
-            }
-            // If preview_mode == 1 => split view (left: raw text, right:
-            // preview)
-            else {
-                // Left side: raw text (up to edit_width)
-                int text_len = E.rows[filerow].rsize - E.coloff;
-                if (text_len < 0) text_len = 0;
-                if (text_len > edit_width) text_len = edit_width;
-
-                // 1) Append text_len characters from the row
-                if (text_len > 0) {
-                    abAppend(ab, &E.rows[filerow].render[E.coloff], text_len);
-                }
-                // 2) If the row is shorter than edit_width, pad with spaces
-                if (text_len < edit_width) {
-                    int padding = edit_width - text_len;
-                    while (padding--) {
-                        abAppend(ab, " ", 1);
-                    }
-                }
-
-                // 3) Append the vertical bar
-                abAppend(ab, "|", 1);
-
-                // 4) Render the same row as Markdown in the remaining width
-                int preview_width =
-                    E.screencols - edit_width - 1;  // minus 1 for the bar
-                if (preview_width < 1) preview_width = 1;  // safety
-                char rendered[MAX_LINE_LENGTH * 3];
-                renderMarkdown(&E.rows[filerow], preview_width, rendered,
-                               sizeof(rendered));
-                abAppend(ab, rendered, strlen(rendered));
+            int len = strlen(colored_line);
+            if (len > E.coloff) {
+                // Disegniamo la stringa renderizzata
+                // NOTA: lo scrolling orizzontale con i colori è complesso.
+                // Questa implementazione è una semplificazione.
+                abAppend(ab, &colored_line[E.coloff], len - E.coloff);
             }
         }
 
-        // Clear to end of the line
-        abAppend(ab, ESC "[K", 3);
-        // Always append newline:
+        abAppend(ab, ESC "[K", 3); // Pulisce il resto della riga
         abAppend(ab, "\r\n", 2);
     }
 }
@@ -939,6 +965,50 @@ void editorSetStatusMessage(const char *fmt, ...) {
 }
 
 /*** Input ***/
+
+char *editorPrompt(const char *prompt, void (*callback)(char *, int)) {
+    size_t bufsize = 128;
+    char *buf = malloc(bufsize);
+    size_t buflen = 0;
+    buf[0] = '\0';
+
+    while (1) {
+        editorSetStatusMessage(prompt, buf);
+        editorRefreshScreen();
+
+        int c = editorReadKey();
+        if (c == DEL_KEY || c == CTRL_KEY('h') || c == 127) { // Backspace
+            if (buflen != 0) buf[--buflen] = '\0';
+        } else if (c == '\x1b') { // Tasto Escape
+            editorSetStatusMessage("");
+            if (callback) callback(buf, c);
+            free(buf);
+            return NULL; // Annulla
+        } else if (c == '\r') { // Tasto Invio
+            if (buflen != 0) {
+                editorSetStatusMessage("");
+                if (callback) callback(buf, c);
+                return buf; // Conferma
+            }
+        } else if (c == ARROW_UP || c == ARROW_DOWN || c == ARROW_LEFT || c == ARROW_RIGHT) {
+            // Passa i tasti freccia al callback per la navigazione della ricerca
+            if (callback) callback(buf, c);
+        } else if (!iscntrl(c) && c < 128) {
+            // Aggiungi il carattere al buffer
+            if (buflen >= bufsize - 1) {
+                bufsize *= 2;
+                buf = realloc(buf, bufsize);
+                if (buf == NULL) die("realloc in editorPrompt");
+            }
+            buf[buflen++] = c;
+            buf[buflen] = '\0';
+        }
+
+        // Esegui il callback (se esiste) ad ogni tasto premuto
+        if (callback) callback(buf, c);
+    }
+}
+
 void editorMoveCursor(int key) {
     EditorRow *row = (E.cy >= E.numrows || E.cy < 0) ? NULL : &E.rows[E.cy];
 
@@ -981,135 +1051,86 @@ void editorMoveCursor(int key) {
 void editorProcessKeypress() {
     static int quit_times = 2;
     int c = editorReadKey();
+    // Normal or split-view modes
+    switch (c) {
+        case '\r':
+            editorInsertNewline();
+            break;
 
-    // If in preview-only mode (E.preview_mode == 2), we ignore most keys
-    if (E.preview_mode == 2) {
-        switch (c) {
-            case CTRL_KEY('q'):
-                if (E.dirty && quit_times > 0) {
-                    editorSetStatusMessage(
-                        "WARNING! File has unsaved changes. "
-                        "Press Ctrl-Q %d more times to quit.",
-                        quit_times);
-                    quit_times--;
-                    return;
-                }
-                {
-                    DWORD written;
-                    WriteConsole(E.hStdout, ESC "[2J", 4, &written, NULL);
-                    WriteConsole(E.hStdout, ESC "[H", 3, &written, NULL);
-                    exit(0);
-                }
-                break;
-            case CTRL_KEY('p'):
-                E.preview_mode = (E.preview_mode + 1) % 3;
-                editorSetStatusMessage("Preview mode: %s",
-                                       (E.preview_mode == 0) ? "edit only"
-                                       : (E.preview_mode == 1)
-                                           ? "split view"
-                                           : "preview only");
-                break;
-            case ARROW_UP:
-            case ARROW_DOWN:
-            case PAGE_UP:
-            case PAGE_DOWN:
-                editorMoveCursor(c);
-                break;
-            default:
-                // Ignore other keys
+        case CTRL_KEY('q'):
+            if (E.dirty && quit_times > 0) {
+                editorSetStatusMessage(
+                    "WARNING! File has unsaved changes. "
+                    "Press Ctrl-Q %d more times to quit.",
+                    quit_times);
+                quit_times--;
                 return;
+            }
+            {
+                DWORD written;
+                WriteConsole(E.hStdout, ESC "[2J", 4, &written, NULL);
+                WriteConsole(E.hStdout, ESC "[H", 3, &written, NULL);
+                exit(0);
+            }
+            break;
+
+        case CTRL_KEY('s'):
+            editorSave();
+            break;
+
+        case CTRL_KEY('o'):
+            editorOpenFilePrompt();
+            break;
+
+        case 127:  // Backspace
+        case CTRL_KEY('h'):
+            editorDelChar();
+            break;
+
+        case CTRL_KEY('f'):
+            editorFind();
+            break;
+
+        case CTRL_KEY(']'): // Scorciatoia per il brace matching
+            editorFindMatchingBrace();
+            break;
+
+        // Movement
+        case ARROW_LEFT:
+        case ARROW_RIGHT:
+        case ARROW_UP:
+        case ARROW_DOWN:
+            editorMoveCursor(c);
+            break;
+
+        case HOME_KEY:
+            E.cx = 0;
+            break;
+        case END_KEY:
+            if (E.cy < E.numrows) {
+                E.cx = E.rows[E.cy].size;
+            }
+            break;
+        case PAGE_UP:
+            E.cy = E.rowoff; // Muovi il cursore all'inizio della schermata
+            break;
+        case PAGE_DOWN:
+            E.cy = E.rowoff + E.screenrows - 1; // Muovi alla fine
+            if (E.cy > E.numrows) E.cy = E.numrows;
+            break;
+        case DEL_KEY:
+            editorMoveCursor(ARROW_RIGHT);
+            editorDelChar();
+            break;
+
+        case '\x1b':  // Escape
+            // ignore
+            break;
+
+        default:
+            editorInsertChar(c);
+            break;
         }
-    } else {
-        // Normal or split-view modes
-        switch (c) {
-            case '\r':
-                editorInsertNewline();
-                break;
-
-            case CTRL_KEY('q'):
-                if (E.dirty && quit_times > 0) {
-                    editorSetStatusMessage(
-                        "WARNING! File has unsaved changes. "
-                        "Press Ctrl-Q %d more times to quit.",
-                        quit_times);
-                    quit_times--;
-                    return;
-                }
-                {
-                    DWORD written;
-                    WriteConsole(E.hStdout, ESC "[2J", 4, &written, NULL);
-                    WriteConsole(E.hStdout, ESC "[H", 3, &written, NULL);
-                    exit(0);
-                }
-                break;
-
-            case CTRL_KEY('s'):
-                editorSave();
-                break;
-
-            case CTRL_KEY('p'):
-                E.preview_mode = (E.preview_mode + 1) % 3;
-                editorSetStatusMessage("Preview mode: %s",
-                                       (E.preview_mode == 0) ? "edit only"
-                                       : (E.preview_mode == 1)
-                                           ? "split view"
-                                           : "preview only");
-                break;
-
-            case 127:  // Backspace
-            case CTRL_KEY('h'):
-                editorDelChar();
-                break;
-
-            case CTRL_KEY('f'):
-                editorSetStatusMessage("Search function not implemented yet");
-                break;
-
-            // Movement
-            case ARROW_LEFT:
-            case ARROW_RIGHT:
-            case ARROW_UP:
-            case ARROW_DOWN:
-                editorMoveCursor(c);
-                break;
-
-            case HOME_KEY:
-                E.cx = 0;
-                break;
-            case END_KEY:
-                if (E.cy < E.numrows) {
-                    E.cx = E.rows[E.cy].size;
-                }
-                break;
-            case PAGE_UP:
-                E.cy = E.rowoff;
-                {
-                    int times = E.screenrows;
-                    while (times--) editorMoveCursor(ARROW_UP);
-                }
-                break;
-            case PAGE_DOWN:
-                E.cy = E.rowoff + E.screenrows - 1;
-                if (E.cy > E.numrows) E.cy = E.numrows;
-                {
-                    int times = E.screenrows;
-                    while (times--) editorMoveCursor(ARROW_DOWN);
-                }
-                break;
-            case DEL_KEY:
-                editorMoveCursor(ARROW_RIGHT);
-                editorDelChar();
-                break;
-
-            case '\x1b':  // Escape
-                // ignore
-                break;
-
-            default:
-                editorInsertChar(c);
-                break;
-        }
-    }
     quit_times = 2;
 }
 
@@ -1152,7 +1173,6 @@ void editorInit() {
     E.rows = NULL;
     E.filename = NULL;
     E.dirty = 0;
-    E.preview_mode = 0;
     E.statusmsg[0] = '\0';
 
     if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
@@ -1169,8 +1189,7 @@ int main(int argc, char *argv[]) {
         editorOpen(argv[1]);
     }
 
-    editorSetStatusMessage(
-        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-P = preview mode");
+    editorSetStatusMessage(WELCOME_MESSAGE);
 
     while (1) {
         editorRefreshScreen();
@@ -1179,3 +1198,8 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
+
+/* 
+compile: gcc termineditor.c -o termineditor.exe
+run: .\termineditor.exe termineditor.c
+*/

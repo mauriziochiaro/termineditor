@@ -1,113 +1,97 @@
-# Terminal Markdown Editor (termineditor)
+# Terminal C Editor (termineditor)
 
-A simple, cross-platform-ish terminal-based Markdown editor (with live preview in split view or full preview mode). This version is adapted for Windows consoles, using Win32 APIs and ANSI escape sequences.
-
-![image](https://github.com/user-attachments/assets/73783b8e-33cc-461e-8e07-118348ad3587)
-
-Split view:
-![image](https://github.com/user-attachments/assets/c60da031-e92c-428b-831a-2a3db003ce81)
+Un semplice editor C per terminale, pensato per essere multipiattaforma. Questa versione è adattata per le console di Windows e utilizza le API Win32 e le sequenze di escape ANSI.
 
 ## Features
 
-- **Real-time preview**: Toggle between edit-only, split, and preview-only modes (`Ctrl+P`).
-- **Basic Markdown support**: Renders headers, list items, horizontal rules, bold, italic, and inline code.
-- **File I/O**: Load a file on startup and save (`Ctrl+S`) any changes made.
-- **Minimal, single C file**: Just one `.c` source file.
-- **Cursor-based editing**: Move around, insert text, backspace, and new lines.
+- **Evidenziazione della Sintassi C**: Colora automaticamente parole chiave, tipi di dati, commenti, stringhe, numeri e direttive del preprocessore.
+- **Gestione File Completa**: Apri file esistenti (`Ctrl+O`), salva le modifiche (`Ctrl+S`), e salva nuovi file con un nome personalizzato ("Salva con Nome" automatico).
+- **Ricerca nel Testo**: Trova stringhe di testo nel file con una ricerca interattiva (`Ctrl+F`) che permette di navigare tra le occorrenze.
+- **Corrispondenza Parentesi**: Trova la parentesi graffa `{}` corrispondente a quella sotto il cursore (`Ctrl+]`).
+- **Minimale, Singolo File C**: L'intero editor è contenuto in un unico file sorgente `.c`.
+- **Editing Basato su Cursore**: Muoviti nel testo, inserisci caratteri, cancella e crea nuove righe.
 
 ## Requirements
 
-- A **Windows** console that supports **ANSI escape sequences**:
-  - Windows 10 or later typically has `ENABLE_VIRTUAL_TERMINAL_PROCESSING`.
-  - If on older Windows, you may need a workaround or an updated console driver.
-- A **C compiler** that can compile and link Win32 APIs (Visual Studio, MinGW, etc.).
+- Una console **Windows** che supporti le **sequenze di escape ANSI**:
+  - Windows 10 o successivi hanno tipicamente `ENABLE_VIRTUAL_TERMINAL_PROCESSING` abilitato.
+  - Su versioni più vecchie di Windows, potrebbe essere necessario un workaround o un driver della console aggiornato.
+- Un **compilatore C** in grado di compilare e linkare le API Win32 (es. Visual Studio, MinGW).
 
 ## Building
 
-1. **Install** a C compiler on Windows (e.g., MSVC, MinGW, etc.).
-2. **Open** a terminal or developer command prompt in the project folder.
-3. **Compile** the source:
+1.  **Installa** un compilatore C su Windows (es. MSVC, MinGW).
+2.  **Apri** un terminale o un prompt dei comandi per sviluppatori nella cartella del progetto.
+3.  **Compila** il sorgente:
 
-   ```bash
-   cl termineditor.c /Fe:termineditor.exe
-   ```
-   or, if using MinGW:
-   ```bash
-   gcc termineditor.c -o termineditor.exe
-   ```
+    ```bash
+    # Con il compilatore di Visual Studio (cl.exe)
+    cl termineditor.c /Fe:termineditor.exe
+    ```
+    o, se usi MinGW:
+    ```bash
+    # Con GCC (MinGW)
+    gcc termineditor.c -o termineditor.exe
+    ```
 
-4. **Run** the generated `termineditor.exe` in a Windows console that supports ANSI sequences.
+4.  **Esegui** il file `termineditor.exe` generato in una console Windows che supporti le sequenze ANSI.
 
 ## Running
 
-You can launch the editor with an optional filename. For example:
+Puoi avviare l'editor con un nome di file opzionale. Per esempio:
 
 ```bash
-.\termineditor myfile.md
+.\termineditor miofile.c
 ```
 
-If the file does not exist, it will start editing a new (empty) file. If you omit the filename, it defaults to an unnamed buffer that you can later save as `untitled.md`.
+Se il file non esiste, verrà creato un nuovo buffer vuoto. Se ometti il nome del file, l'editor partirà con un buffer senza nome che potrai salvare in seguito.
 
 ## Keybindings
 
 - **`Ctrl+Q`**  
-  Quit the editor. If unsaved changes exist, it will prompt you to press `Ctrl+Q` again to confirm.
-  
+  Chiude l'editor. Se ci sono modifiche non salvate, ti chiederà di premere `Ctrl+Q` una seconda volta per confermare.
+
 - **`Ctrl+S`**  
-  Save the current file (writes the buffer contents to disk).
+  Salva il file corrente. Se il file è nuovo (senza nome), ti chiederà di inserire un nome ("Salva con Nome").
 
-- **`Ctrl+P`**  
-  Cycle preview modes: **edit-only** → **split** → **preview-only** → back to **edit-only**.
+- **`Ctrl+O`**  
+  Apre un file. Ti verrà chiesto di inserire il nome del file da aprire. L'operazione verrà annullata se ci sono modifiche non salvate nel file corrente.
 
-- **Arrow Keys**  
-  Move cursor left, right, up, or down (if lines exist).
+- **`Ctrl+F`**  
+  Cerca nel testo. Inserisci la parola da cercare e premi Invio. Usa i tasti freccia (Su/Giù) per navigare tra le occorrenze. Premi ESC per annullare.
+
+- **`Ctrl+]`**  
+  Trova la parentesi graffa corrispondente a quella su cui si trova il cursore.
+
+- **Tasti Freccia**  
+  Spostano il cursore a sinistra, destra, su o giù.
 
 - **Backspace**  
-  Deletes the character to the left of the cursor (or merges lines if at the beginning).
+  Cancella il carattere a sinistra del cursore (o unisce le righe se il cursore è all'inizio di una linea).
 
-- **Enter (Return)**  
-  Insert a new line at the cursor position.
+- **Invio (Enter)**  
+  Inserisce una nuova riga alla posizione del cursore.
 
 - **Page Up / Page Down**  
-  Move the cursor up or down one screen's worth of lines.
+  Sposta il cursore su o giù di una schermata intera.
 
 - **Home / End**  
-  Jump to the beginning or end of the line.
-
-*(If you originally had “vim-style movement” using `h/j/k/l`, note that you can reintroduce or remove those mappings as needed.)*
-
-## Preview Mode Details
-
-- **Edit-only**: You see just the text buffer.  
-- **Split view**: Left side is the raw text, right side is the rendered Markdown preview.  
-- **Preview-only**: You only see the rendered Markdown, no raw text.
-
-## Markdown Rendering
-
-Supported constructs:
-- **Headers** using `#`, `##`, `###`, etc.
-- **List items** with `-`, `*`, or `+`.
-- **Horizontal rules** if you have three or more `-` (or `*` or `_`) on a line.
-- **Code blocks** that begin with ````` ``` `````.
-- **Inline bold** if surrounded by `**double asterisks**`.
-- **Inline italic** if surrounded by a single `*`.
-- **Inline code** if surrounded by `` ` `` characters.
+  Sposta il cursore all'inizio o alla fine della riga corrente.
 
 ## Known Limitations / Caveats
 
-1. **Search** (`Ctrl+F`) is just a placeholder: “Search function not implemented yet.”
-2. **Terminal size**: If the console is resized during use, we attempt to re-check dimensions, but some Windows consoles may require you to exit and relaunch for the changes to be recognized reliably.
-3. **Older Windows**: On Windows older than 10, ANSI escape processing might not be available by default. You can either upgrade or install a third-party console (such as ConEmu) that supports ANSI sequences.
-4. **Line wrapping**: This editor does not do automatic word wrapping or long-line soft wrapping. You must manually break lines.
+1.  **Dimensioni del Terminale**: Se la console viene ridimensionata durante l'uso, l'editor tenta di adattarsi, ma alcune console Windows potrebbero richiedere un riavvio del programma per riconoscere correttamente le nuove dimensioni.
+2.  **Windows Datato**: Su versioni di Windows precedenti a Windows 10, l'elaborazione delle sequenze di escape ANSI potrebbe non essere disponibile di default. Potrebbe essere necessario aggiornare o installare una console di terze parti (come ConEmu).
+3.  **A Capo Automatico**: Questo editor non supporta l'andata a capo automatica (word wrapping). Le righe lunghe non vengono spezzate e bisogna andare a capo manualmente.
 
 ## Contributing
 
-Contributions or suggestions are welcome! Feel free to:
+Contributi o suggerimenti sono i benvenuti! Sentiti libero di:
 
-- **Open issues** if you spot bugs.
-- **Submit PRs** (pull requests) if you have improvements or new features.
-- Provide feedback on how to handle differences in console behavior on various Windows versions.
+- **Aprire una issue** se trovi dei bug.
+- **Inviare una Pull Request (PR)** se hai miglioramenti o nuove funzionalità.
+- Fornire feedback su come gestire le differenze di comportamento tra le varie versioni di Windows.
 
 ## License
 
-MIT, do whatever you want.
+MIT, fai quello che vuoi.
