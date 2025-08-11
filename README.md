@@ -1,6 +1,6 @@
 # Terminal C Editor (termineditor)
 
-Un semplice editor C per terminale, pensato per essere multipiattaforma. Questa versione è adattata per le console di Windows e utilizza le API Win32 e le sequenze di escape ANSI.
+Un semplice editor C per terminale. Questa versione è adattata per le console di Windows e utilizza le API Win32 e le sequenze di escape ANSI.
 
 ## Features
 

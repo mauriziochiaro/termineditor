@@ -289,7 +289,6 @@ void editorDelRow(int at) {
     E.dirty = 1;
 }
 
-// Sostituisci completamente la vecchia funzione
 void editorUpdateRow(EditorRow *row) {
     free(row->render);
     int tabs = 0;
@@ -692,11 +691,11 @@ void editorFind() {
 #define COLOR_RESET   "\x1b[0m"
 #define COLOR_KEYWORD "\x1b[33m" // Giallo
 #define COLOR_TYPE    "\x1b[36m" // Ciano
-#define COLOR_COMMENT "\x1b[38;5;70m" // Verde scuro
+#define COLOR_COMMENT "\x1b[38;5;106m" // Verde scuro
 #define COLOR_STRING  "\x1b[33m" // Arancione
 #define COLOR_NUMBER  "\x1b[31m" // Rosso
 #define COLOR_PREPROC "\x1b[35m" // Magenta
-#define COLOR_CONSTANT "\x1b[38;5;208m" // Arancione
+#define COLOR_CONSTANT "\x1b[38;5;214m" // Arancione
 
 // Lista di keyword e tipi del C
 const char *C_KEYWORDS[] = {
@@ -723,7 +722,7 @@ void renderCSyntax(char *rendered_text, char *buffer, int buffer_size) {
 
     // Gestione direttive preprocessore all'inizio della riga
     if (i == 0 && rendered_text[i] == '#') {
-        pos += snprintf(&buffer[pos], buffer_size - pos, "%s%s%s", COLOR_PREPROC, rendered_text, COLOR_RESET);
+        pos += snprintf(&buffer[pos], buffer_size - pos, "%s%s%s", COLOR_KEYWORD, rendered_text, COLOR_RESET);
         return;
     }
 
